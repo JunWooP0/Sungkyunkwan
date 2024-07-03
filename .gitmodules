@@ -1,0 +1,15 @@
+[submodule "3-1/Open_Source_Software/oss_personal_project"]
+	path = 3-1/Open_Source_Software/oss_personal_project
+	url = https://github.com/JunWooP0/oss_personal_project
+[submodule "3-1/Open_Source_Software/oss_week11"]
+	path = 3-1/Open_Source_Software/oss_week11
+	url = https://github.com/JunWooP0/oss_week11
+[submodule "3-1/Open_Source_Software/oss_week6_2024"]
+	path = 3-1/Open_Source_Software/oss_week6_2024
+	url = https://github.com/JunWooP0/oss_week6_2024
+[submodule "3-1/Open_Source_Software/oss_week5_2024"]
+	path = 3-1/Open_Source_Software/oss_week5_2024
+	url = https://github.com/JunWooP0/oss_week5_2024
+[submodule "3-1/Open_Source_Software/github_week3_2024_2"]
+	path = 3-1/Open_Source_Software/github_week3_2024_2
+	url = https://github.com/JunWooP0/github_week3_2024_2
