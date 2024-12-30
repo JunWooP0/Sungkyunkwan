@@ -1,0 +1,160 @@
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split, KFold
+from sklearn.linear_model import LinearRegression, LogisticRegression,SGDRegressor, SGDClassifier
+from sklearn.metrics import mean_squared_error, accuracy_score, classification_report
+from sklearn.preprocessing import PolynomialFeatures
+import time
+from sklearn.linear_model import Ridge
+
+# 데이터 로드
+data = pd.read_csv('Stateofsewage.csv')
+
+# 날짜를 주기적 특성으로 변환
+data['Year'] = pd.to_datetime(data['Sampling Date']).dt.year
+data['DayOfYear'] = pd.to_datetime(data['Sampling Date']).dt.dayofyear
+
+data['Year_Sin'] = np.sin(2 * np.pi * data['Year'] / 10)  # 10년 주기로 가정
+data['Year_Cos'] = np.cos(2 * np.pi * data['Year'] / 10)
+data['Day_Sin'] = np.sin(2 * np.pi * data['DayOfYear'] / 365)
+data['Day_Cos'] = np.cos(2 * np.pi * data['DayOfYear'] / 365)
+
+# 위도와 경도를 표준화
+scaler = StandardScaler()
+data[['Latitude', 'Longitude']] = scaler.fit_transform(data[['Geographical Location (Latitude)', 'Geographical Location (Longitude)']])
+
+# 새로운 기준으로 State of Sewage System 정의
+def redefine_state(row):
+    total = row['Nitrogen (mg/L)'] + row['Phosphorus (mg/L)']
+    if total <= 5:
+        return 'Good'
+    elif 5 < total <= 11:
+        return 'Moderate'
+    else:
+        return 'Poor'
+
+# 새로운 State 값 생성
+data['State of Sewage System'] = data.apply(redefine_state, axis=1)
+
+# 라벨 데이터 매핑 (Good -> 2, Moderate -> 1, Poor -> 0)
+label_mapping = {'Good': 2, 'Moderate': 1, 'Poor': 0}
+data['Label'] = data['State of Sewage System'].map(label_mapping)
+
+# 입력 및 라벨 분리
+X = data[['Latitude', 'Longitude', 'Year_Sin', 'Year_Cos', 'Day_Sin', 'Day_Cos']]
+y_regression = data[['Nitrogen (mg/L)', 'Phosphorus (mg/L)']]
+y_classification = data['Label']
+
+# 데이터 분리
+X_train, X_test, y_reg_train, y_reg_test, y_class_train, y_class_test = train_test_split(
+    X, y_regression, y_classification, test_size=0.2, random_state=42
+)
+
+# 다항 특성 생성
+poly = PolynomialFeatures(degree=2, include_bias=False)
+X_train_poly = poly.fit_transform(X_train)
+X_test_poly = poly.transform(X_test)
+
+
+ridge_nitrogen = Ridge(alpha=0.2)  # Regularization 강도 설정
+ridge_nitrogen.fit(X_train_poly, y_reg_train['Nitrogen (mg/L)'])
+
+ridge_phosphorus = Ridge(alpha=0.2)
+ridge_phosphorus.fit(X_train_poly, y_reg_train['Phosphorus (mg/L)'])
+
+# Validation MSE 계산
+y_val_pred_nitrogen = ridge_nitrogen.predict(X_test_poly)
+y_val_pred_phosphorus = ridge_phosphorus.predict(X_test_poly)
+mse_nitrogen = mean_squared_error(y_reg_test['Nitrogen (mg/L)'], y_val_pred_nitrogen)
+mse_phosphorus = mean_squared_error(y_reg_test['Phosphorus (mg/L)'], y_val_pred_phosphorus)
+
+print(f"Validation MSE (Nitrogen): {mse_nitrogen:.4f}")
+print(f"Validation MSE (Phosphorus): {mse_phosphorus:.4f}")
+
+# Polynomial Regression (Mini-batch SGD)
+batch_size = 32
+learning_rate = 0.01
+kf = KFold(n_splits=5)
+
+def train_sgd(X, y):
+    sgd = SGDRegressor(loss='squared_error', learning_rate='constant', eta0=learning_rate, random_state=42)
+    for train_index, val_index in kf.split(X):
+        X_train_fold, X_val_fold = X[train_index], X[val_index]
+        y_train_fold, y_val_fold = y[train_index], y[val_index]
+        
+        # Mini-batch SGD
+        for i in range(0, len(X_train_fold), batch_size):
+            X_batch = X_train_fold[i:i + batch_size]
+            y_batch = y_train_fold[i:i + batch_size]
+            sgd.partial_fit(X_batch, y_batch)
+        
+        # 검증 데이터로 손실 계산
+        y_val_pred = sgd.predict(X_val_fold)
+        mse = mean_squared_error(y_val_fold, y_val_pred)
+        print(f"Validation MSE: {mse:.4f}")
+    return sgd
+
+    
+# Nitrogen 및 Phosphorus 모델 학습
+sgd_nitrogen = train_sgd(X_train_poly, y_reg_train['Nitrogen (mg/L)'].values)
+sgd_phosphorus = train_sgd(X_train_poly, y_reg_train['Phosphorus (mg/L)'].values)
+
+# Logistic Regression (Softmax)
+X_train_softmax = np.column_stack([
+    sgd_nitrogen.predict(X_train_poly),
+    sgd_phosphorus.predict(X_train_poly)
+])
+X_test_softmax = np.column_stack([
+    sgd_nitrogen.predict(X_test_poly),
+    sgd_phosphorus.predict(X_test_poly)
+])
+
+softmax_model = SGDClassifier(loss='log_loss', learning_rate='constant', eta0=learning_rate, random_state=42)
+for i in range(0, len(X_train_softmax), batch_size):
+    X_batch = X_train_softmax[i:i + batch_size]
+    y_batch = y_class_train.iloc[i:i + batch_size]
+    softmax_model.partial_fit(X_batch, y_batch, classes=np.unique(y_class_train))
+
+
+y_pred_class = softmax_model.predict(X_test_softmax)
+print("Accuracy:", accuracy_score(y_class_test, y_pred_class))
+
+# Accuracy 계산
+accuracy = accuracy_score(y_class_test, y_pred_class)
+print(f"Accuracy: {accuracy:.4f}")
+
+# Precision, Recall, F1-score 계산
+report = classification_report(y_class_test, y_pred_class, target_names=['Poor', 'Moderate', 'Good'])
+print(report)
+
+# Nitrogen과 Phosphorus의 MSE 계산
+mse_nitrogen = mean_squared_error(y_reg_test['Nitrogen (mg/L)'], sgd_nitrogen.predict(X_test_poly))
+mse_phosphorus = mean_squared_error(y_reg_test['Phosphorus (mg/L)'], sgd_phosphorus.predict(X_test_poly))
+
+print(f"MSE (Nitrogen): {mse_nitrogen:.4f}")
+print(f"MSE (Phosphorus): {mse_phosphorus:.4f}")
+
+
+# Polynomial Regression 학습 시간 측정
+start_time = time.time()
+sgd_nitrogen.fit(X_train_poly, y_reg_train['Nitrogen (mg/L)'])
+end_time = time.time()
+print(f"Training Time for Nitrogen: {end_time - start_time:.4f} seconds")
+
+start_time = time.time()
+sgd_phosphorus.fit(X_train_poly, y_reg_train['Phosphorus (mg/L)'])
+end_time = time.time()
+print(f"Training Time for Phosphorus: {end_time - start_time:.4f} seconds")
+
+# Logistic Regression 학습 시간 측정
+start_time = time.time()
+for i in range(0, len(X_train_softmax), batch_size):
+    X_batch = X_train_softmax[i:i + batch_size]
+    y_batch = y_class_train.iloc[i:i + batch_size]
+    softmax_model.partial_fit(X_batch, y_batch, classes=np.unique(y_class_train))
+end_time = time.time()
+print(f"Training Time for Logistic Regression: {end_time - start_time:.4f} seconds")
+
+
+
